@@ -267,12 +267,13 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	mac := hmac.New(sha256.New, s.sessionSecret)
 	mac.Write([]byte(encoded))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sandpanel_session",
 		Value:    encoded + "." + signature,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   isSecure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   12 * 60 * 60,
 	})
@@ -284,12 +285,13 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 405, "method not allowed")
 		return
 	}
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sandpanel_session",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   isSecure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
