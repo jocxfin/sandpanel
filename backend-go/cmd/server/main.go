@@ -83,6 +83,7 @@ func main() {
 	go runAutomaticUpdates(store, fleetManager, steam)
 	go runConfigWatch(store, hub)
 	go autoStartProfiles(cli.StartProfiles, store, fleetManager)
+	go autoInstallGame(binary, steam)
 
 	// TODO: i will work on this later — log-based stats (kills, headshots, objectives)
 	// need more work to properly parse and attribute events from the server log.
@@ -179,6 +180,18 @@ func autoStartProfiles(names []string, store *state.Store, fleetManager *fleet.M
 			continue
 		}
 		log.Printf("auto-started profile=%s (%s)", profile.ID, profile.Name)
+	}
+}
+
+func autoInstallGame(gameBinary string, steam *steamcmd.Manager) {
+	if _, err := os.Stat(gameBinary); err == nil {
+		return // game already installed
+	}
+	log.Printf("game binary not found at %s — starting automatic install via SteamCMD", gameBinary)
+	// Wait for the HTTP server to be ready so the install progress is visible in the UI
+	time.Sleep(2 * time.Second)
+	if err := steam.Install(false, ""); err != nil {
+		log.Printf("auto-install failed: %v", err)
 	}
 }
 
