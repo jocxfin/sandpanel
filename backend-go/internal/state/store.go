@@ -669,6 +669,12 @@ func normalizeRole(role string) string {
 	return ""
 }
 
+// RoleLevel returns the privilege level for a role (higher = more privileged).
+// Returns 0 for unknown roles.
+func RoleLevel(role string) int {
+	return validRoles[strings.ToLower(strings.TrimSpace(role))]
+}
+
 // UpdateLogStats is a stub for the log watcher integration.
 // TODO: i will work on this later once log-based stats parsing is reliable
 func (s *Store) UpdateLogStats(stats map[string]*LogPlayerStats) {}

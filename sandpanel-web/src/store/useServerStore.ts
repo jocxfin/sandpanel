@@ -193,18 +193,28 @@ export const useServerStore = create<StoreState>((set, get) => ({
 
   login: async (name: string, password: string) => {
     const user = await api.login(name, password)
-    const files = await api.getConfigFiles()
-    const fileList = Array.isArray(files.files) ? files.files : []
-    const activeName = fileList.includes("Game.ini") ? "Game.ini" : fileList[0] ?? "Game.ini"
     set(() => ({ currentUser: user }))
-    await Promise.all([
-      refreshCore(set),
-      refreshMods(set),
-      get().refreshAdminData(),
-      get().loadModExplorer({ page: 1, pageSize: 24 }),
-      get().loadConfig(activeName),
-    ])
-    set(() => ({ configFiles: fileList, activeConfigName: activeName }))
+    const level = ({ user: 1, moderator: 2, admin: 3, host: 4 } as Record<string, number>)[user.role] ?? 1
+
+    // Always fetch core data (server status, etc.)
+    const corePromises: Promise<void>[] = [refreshCore(set)]
+
+    // Only fetch admin-level data for admin+ users
+    if (level >= 3) {
+      const files = await api.getConfigFiles()
+      const fileList = Array.isArray(files.files) ? files.files : []
+      const activeName = fileList.includes("Game.ini") ? "Game.ini" : fileList[0] ?? "Game.ini"
+      corePromises.push(
+        refreshMods(set),
+        get().refreshAdminData(),
+        get().loadModExplorer({ page: 1, pageSize: 24 }),
+        get().loadConfig(activeName),
+      )
+      await Promise.all(corePromises)
+      set(() => ({ configFiles: fileList, activeConfigName: activeName }))
+    } else {
+      await Promise.all(corePromises)
+    }
   },
 
   logout: () => {
@@ -237,17 +247,30 @@ export const useServerStore = create<StoreState>((set, get) => ({
         return
       }
 
-      const files = await api.getConfigFiles()
-      const fileList = Array.isArray(files.files) ? files.files : []
-      const activeName = fileList.includes("Game.ini") ? "Game.ini" : fileList[0] ?? "Game.ini"
+      const level = ({ user: 1, moderator: 2, admin: 3, host: 4 } as Record<string, number>)[currentUser.role] ?? 1
 
-      await Promise.all([
-        refreshCore(set),
-        refreshMods(set),
-        get().loadConfig(activeName),
-        get().loadModExplorer({ page: 1, pageSize: 24 }),
-        refreshAdminCore(set),
-      ])
+      // Always fetch core data
+      const corePromises: Promise<void>[] = [refreshCore(set)]
+
+      let fileList: string[] = []
+      let activeName = "Game.ini"
+
+      // Only fetch admin-level data for admin+ users
+      if (level >= 3) {
+        try {
+          const files = await api.getConfigFiles()
+          fileList = Array.isArray(files.files) ? files.files : []
+          activeName = fileList.includes("Game.ini") ? "Game.ini" : fileList[0] ?? "Game.ini"
+        } catch { /* user lacks permission, skip */ }
+        corePromises.push(
+          refreshMods(set),
+          get().loadConfig(activeName),
+          get().loadModExplorer({ page: 1, pageSize: 24 }),
+          refreshAdminCore(set),
+        )
+      }
+
+      await Promise.all(corePromises)
 
       set(() => ({
         configFiles: fileList,

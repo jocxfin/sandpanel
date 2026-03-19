@@ -21,36 +21,36 @@ import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import sandpanelIcon from "../../assets/sandpanel-icon.png"
 
-const navSections = [
+const roleLevel: Record<string, number> = { user: 1, moderator: 2, admin: 3, host: 4 }
+
+const allNavSections = [
   {
     label: "Server",
     items: [
-      { to: "/", label: "Dashboard", icon: LayoutDashboard },
-      { to: "/players", label: "Players", icon: Users },
-      { to: "/rcon", label: "RCON", icon: TerminalSquare },
-      { to: "/server-control", label: "Server Control", icon: Gamepad2 },
+      { to: "/", label: "Dashboard", icon: LayoutDashboard, minRole: 1 },
+      { to: "/players", label: "Players", icon: Users, minRole: 2 },
+      { to: "/rcon", label: "RCON", icon: TerminalSquare, minRole: 2 },
+      { to: "/server-control", label: "Server Control", icon: Gamepad2, minRole: 2 },
     ],
   },
   {
     label: "Configuration",
     items: [
-      { to: "/configuration", label: "Configuration", icon: Cog },
-      { to: "/profiles", label: "Profiles", icon: Server },
-      { to: "/mods", label: "Mods", icon: Package },
-      { to: "/mods/explorer", label: "Mod Explorer", icon: Radar },
+      { to: "/configuration", label: "Configuration", icon: Cog, minRole: 3 },
+      { to: "/profiles", label: "Profiles", icon: Server, minRole: 3 },
+      { to: "/mods", label: "Mods", icon: Package, minRole: 3 },
+      { to: "/mods/explorer", label: "Mod Explorer", icon: Radar, minRole: 3 },
     ],
   },
   {
     label: "System",
     items: [
-      { to: "/steamcmd", label: "SteamCMD", icon: Terminal },
-      { to: "/logs", label: "Logs", icon: FileText },
-      { to: "/operations", label: "Operations", icon: Settings },
+      { to: "/steamcmd", label: "SteamCMD", icon: Terminal, minRole: 3 },
+      { to: "/logs", label: "Logs", icon: FileText, minRole: 3 },
+      { to: "/operations", label: "Operations", icon: Settings, minRole: 3 },
     ],
   },
 ]
-
-const allNavItems = navSections.flatMap((section) => section.items)
 
 export function AppShell() {
   const currentUser = useServerStore((state) => state.currentUser)
@@ -65,6 +65,22 @@ export function AppShell() {
   const [password, setPassword] = useState("")
   const [loginError, setLoginError] = useState("")
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false)
+
+  const userLevel = roleLevel[currentUser?.role ?? "user"] ?? 1
+
+  const navSections = useMemo(() => {
+    return allNavSections
+      .map((section) => ({
+        ...section,
+        items: section.items.filter((item) => userLevel >= item.minRole),
+      }))
+      .filter((section) => section.items.length > 0)
+  }, [userLevel])
+
+  const allNavItems = useMemo(
+    () => navSections.flatMap((section) => section.items),
+    [navSections],
+  )
 
   const activeProfile = useMemo(
     () => profiles.find((p) => p.id === activeProfileId) ?? profiles[0],
