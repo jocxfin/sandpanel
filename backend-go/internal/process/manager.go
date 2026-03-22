@@ -67,11 +67,11 @@ type Manager struct {
 	activeInstallMod string
 	installCrashes   map[string]int
 
-	// Two-phase startup: bootstrap without mutators, then RCON travel with mutators.
-	pendingMutatorTravel string            // full travel URL with mutators, empty if single-phase
-	hasMods              bool              // whether mods are enabled for this launch
-	readinessSignals     map[string]bool   // tracks readiness signals from server log
-	worldReadyCount      int               // counts WaitingToStart occurrences (need 2 when mods are present)
+	// Two-phase startup: bootstrap without mutators, then optional final RCON travel.
+	pendingFinalTravel string            // full travel URL for the final RCON travel, empty if no extra travel is needed
+	hasMods            bool              // whether mods are enabled for this launch
+	readinessSignals   map[string]bool   // tracks readiness signals from server log
+	worldReadyCount    int               // counts WaitingToStart occurrences (need 2 when mods are present)
 
 	serverBuffer *buffer.Ring
 	rconBuffer   *buffer.Ring
@@ -169,7 +169,8 @@ func (m *Manager) Start(_ context.Context, req StartRequest) error {
 	password := strings.TrimSpace(req.Password)
 
 	// Two-phase startup: launch WITHOUT mutators first (bootstrap).
-	// Mutators will be applied via RCON travel once the server is ready.
+	// The final RCON travel (with mutators and/or after mod downloads) is
+	// issued once readiness signals confirm all mods are loaded.
 	bootstrapTravel := mods.BuildTravelURL(mapName, req.Scenario, nil, password)
 	fullTravel := mods.BuildTravelURL(mapName, req.Scenario, resolvedMutators, password)
 
@@ -220,14 +221,14 @@ func (m *Manager) Start(_ context.Context, req StartRequest) error {
 	}
 
 	// Set up two-phase readiness tracking.
+	// When mods are enabled we MUST wait for the engine to finish downloading
+	// and loading mod paks (signalled by the second WaitingToStart) before
+	// considering startup complete. A final RCON travel is only needed when
+	// the final travel target differs from the bootstrap target.
 	m.hasMods = hasMods
 	m.readinessSignals = map[string]bool{}
 	m.worldReadyCount = 0
-	if len(resolvedMutators) > 0 {
-		m.pendingMutatorTravel = fullTravel
-	} else {
-		m.pendingMutatorTravel = ""
-	}
+	m.pendingFinalTravel = finalRCONTravelTarget(bootstrapTravel, fullTravel)
 
 	m.cmd = cmd
 	m.status = Status{Running: true, PID: cmd.Process.Pid, StartedAt: time.Now(), LastCommand: append([]string{m.binaryPath}, args...)}
@@ -674,19 +675,23 @@ func (m *Manager) consumeModIOBootMarkers(line string) {
 }
 
 // checkReadiness watches server log lines for readiness signals that indicate
-// the bootstrap world is ready for the final mutator travel.
+// the bootstrap world is ready for startup completion and any final RCON travel.
 //
 // When mods are enabled with -ModDownloadTravelTo, the engine performs its own
 // internal travel after modio downloads finish. This produces a SECOND
 // WaitingToStart. The first WaitingToStart is the initial bootstrap; the second
 // is after the engine has loaded/activated mod paks and done a ModDownloadTravelTo.
-// We issue our mutator travel only on the second WaitingToStart so that mod
-// mutator asset paths are registered.
+// We issue our RCON travel only on the second WaitingToStart so that mod
+// content (including mutator asset paths) is fully registered.
+//
+// This two-phase approach is used whenever mods OR mutators are present.
+// Without it, first-time mod downloads or mod updates can race the server
+// start, causing the server to become accessible before mods are loaded.
 //
 // When no mods are enabled, a single WaitingToStart + RCON ready is sufficient.
 func (m *Manager) checkReadiness(line string) {
 	m.mu.Lock()
-	if m.pendingMutatorTravel == "" || m.readinessSignals == nil {
+	if m.readinessSignals == nil || !requiresReadinessTracking(m.hasMods, m.pendingFinalTravel) {
 		m.mu.Unlock()
 		return
 	}
@@ -720,13 +725,30 @@ func (m *Manager) checkReadiness(line string) {
 		return
 	}
 
-	// All signals received — issue the final mutator travel via RCON.
-	travelURL := m.pendingMutatorTravel
-	m.pendingMutatorTravel = "" // clear so we only fire once
+	// All signals received — mark readiness as complete and issue the final
+	// RCON travel only when the target differs from the bootstrap travel.
+	travelURL := m.pendingFinalTravel
+	m.pendingFinalTravel = "" // clear so we only fire once
+	m.readinessSignals = nil
 	m.mu.Unlock()
 
+	if travelURL == "" {
+		msg := "[SandPanel] All readiness signals received. Mods are loaded; no final RCON travel required."
+		m.serverBuffer.Add(msg)
+		m.rconBuffer.Add(msg)
+		payload, _ := json.Marshal(map[string]any{
+			"type":       "log",
+			"line":       msg,
+			"time":       time.Now().UTC(),
+			"instanceId": m.instanceID,
+			"name":       m.name,
+		})
+		m.hub.Broadcast(payload)
+		return
+	}
+
 	travelCmd := "travel " + travelURL
-	msg := fmt.Sprintf("[SandPanel] All readiness signals received. Issuing final mutator travel: %s", travelCmd)
+	msg := fmt.Sprintf("[SandPanel] All readiness signals received. Issuing final RCON travel: %s", travelCmd)
 	m.serverBuffer.Add(msg)
 	m.rconBuffer.Add(msg)
 	payload, _ := json.Marshal(map[string]any{
@@ -760,7 +782,7 @@ func (m *Manager) checkReadiness(line string) {
 		m.serverBuffer.Add(okMsg)
 		m.rconBuffer.Add(okMsg)
 
-		// Update the lastCommand to reflect the final mutator travel.
+		// Update the lastCommand to reflect the final RCON travel.
 		m.mu.Lock()
 		m.status.LastCommand = append(m.status.LastCommand, "// RCON: "+travelCmd)
 		m.mu.Unlock()
@@ -947,6 +969,17 @@ func defaultString(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func finalRCONTravelTarget(bootstrapTravel, fullTravel string) string {
+	if fullTravel == bootstrapTravel {
+		return ""
+	}
+	return fullTravel
+}
+
+func requiresReadinessTracking(hasMods bool, pendingFinalTravel string) bool {
+	return hasMods || pendingFinalTravel != ""
 }
 
 func sanitizeManagedArgs(extraArgs []string) []string {
