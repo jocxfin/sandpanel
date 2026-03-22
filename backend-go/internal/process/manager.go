@@ -169,7 +169,8 @@ func (m *Manager) Start(_ context.Context, req StartRequest) error {
 	password := strings.TrimSpace(req.Password)
 
 	// Two-phase startup: launch WITHOUT mutators first (bootstrap).
-	// Mutators will be applied via RCON travel once the server is ready.
+	// The final RCON travel (with mutators and/or after mod downloads) is
+	// issued once readiness signals confirm all mods are loaded.
 	bootstrapTravel := mods.BuildTravelURL(mapName, req.Scenario, nil, password)
 	fullTravel := mods.BuildTravelURL(mapName, req.Scenario, resolvedMutators, password)
 
@@ -220,10 +221,15 @@ func (m *Manager) Start(_ context.Context, req StartRequest) error {
 	}
 
 	// Set up two-phase readiness tracking.
+	// When mods are enabled we MUST wait for the engine to finish downloading
+	// and loading mod paks (signalled by the second WaitingToStart) before
+	// issuing the final RCON travel. Without this, a first-time launch or a
+	// mod update can cause the server to become accessible before mods are
+	// loaded.
 	m.hasMods = hasMods
 	m.readinessSignals = map[string]bool{}
 	m.worldReadyCount = 0
-	if len(resolvedMutators) > 0 {
+	if hasMods || len(resolvedMutators) > 0 {
 		m.pendingMutatorTravel = fullTravel
 	} else {
 		m.pendingMutatorTravel = ""
@@ -674,14 +680,18 @@ func (m *Manager) consumeModIOBootMarkers(line string) {
 }
 
 // checkReadiness watches server log lines for readiness signals that indicate
-// the bootstrap world is ready for the final mutator travel.
+// the bootstrap world is ready for the final RCON travel.
 //
 // When mods are enabled with -ModDownloadTravelTo, the engine performs its own
 // internal travel after modio downloads finish. This produces a SECOND
 // WaitingToStart. The first WaitingToStart is the initial bootstrap; the second
 // is after the engine has loaded/activated mod paks and done a ModDownloadTravelTo.
-// We issue our mutator travel only on the second WaitingToStart so that mod
-// mutator asset paths are registered.
+// We issue our RCON travel only on the second WaitingToStart so that mod
+// content (including mutator asset paths) is fully registered.
+//
+// This two-phase approach is used whenever mods OR mutators are present.
+// Without it, first-time mod downloads or mod updates can race the server
+// start, causing the server to become accessible before mods are loaded.
 //
 // When no mods are enabled, a single WaitingToStart + RCON ready is sufficient.
 func (m *Manager) checkReadiness(line string) {
